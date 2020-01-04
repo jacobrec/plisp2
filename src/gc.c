@@ -1,5 +1,6 @@
 #include <plisp/gc.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <assert.h>
 #include <string.h>
 
@@ -17,6 +18,7 @@ struct obj_allocs {
 
 // pool for allocating cons sized objects
 static struct obj_allocs *conspool = NULL;
+static uintptr_t stack_bottom;
 
 static bool get_bit(size_t *array, size_t i) {
     return array[i/(sizeof(size_t)*8)]
@@ -117,4 +119,23 @@ void plisp_gc_permanent(plisp_t obj) {
 
 void plisp_gc_nopermanent(plisp_t obj) {
     plisp_gc_set_permanent(obj, false);
+}
+
+void plisp_init_gc() {
+    static int initted;
+    FILE *statfp;
+
+    if (initted)
+        return;
+
+    initted = 1;
+
+    statfp = fopen("/proc/self/stat", "r");
+    assert(statfp != NULL);
+    fscanf(statfp,
+           "%*d %*s %*c %*d %*d %*d %*d %*d %*u "
+           "%*u %*u %*u %*u %*u %*u %*d %*d "
+           "%*d %*d %*d %*d %*u %*u %*d "
+           "%*u %*u %*u %lu", &stack_bottom);
+    fclose(statfp);
 }

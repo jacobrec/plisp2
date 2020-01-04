@@ -1,3 +1,4 @@
+#include <plisp/gc.h>
 #include <plisp/object.h>
 #include <plisp/read.h>
 #include <plisp/write.h>
@@ -13,6 +14,7 @@ int main(int argc, char *argv[]) {
     plisp_init_compiler(argv[0]);
     plisp_init_toplevel();
     plisp_init_builtin();
+    plisp_init_gc();
 
     if (argc > 1) {
         FILE *file = fopen(argv[1], "r");

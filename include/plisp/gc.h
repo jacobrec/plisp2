@@ -3,6 +3,7 @@
 
 #include <plisp/object.h>
 
+void plisp_init_gc();
 
 plisp_t plisp_alloc_obj(uintptr_t tags);
 
