@@ -4,13 +4,14 @@
 #include <assert.h>
 #include <string.h>
 
-#define MAX_ALLOC_PAGE_SIZE 2048
+#define MAX_ALLOC_PAGE_SIZE 64
+#define BLOCK_BITS (sizeof(size_t)*8)
 
 struct obj_allocs {
-    size_t allocated[MAX_ALLOC_PAGE_SIZE/(sizeof(size_t)*8)];
-    size_t grey_set[MAX_ALLOC_PAGE_SIZE/(sizeof(size_t)*8)];
-    size_t black_set[MAX_ALLOC_PAGE_SIZE/(sizeof(size_t)*8)];
-    size_t permanent[MAX_ALLOC_PAGE_SIZE/(sizeof(size_t)*8)];
+    size_t allocated[MAX_ALLOC_PAGE_SIZE/BLOCK_BITS];
+    size_t grey_set[MAX_ALLOC_PAGE_SIZE/BLOCK_BITS];
+    size_t black_set[MAX_ALLOC_PAGE_SIZE/BLOCK_BITS];
+    size_t permanent[MAX_ALLOC_PAGE_SIZE/BLOCK_BITS];
     size_t num_objs;
     struct plisp_cons *objs;
     struct obj_allocs *next;
@@ -20,6 +21,8 @@ struct obj_allocs {
 static struct obj_allocs *conspool = NULL;
 static uintptr_t stack_bottom;
 
+static void plisp_gc_collect();
+
 static bool get_bit(size_t *array, size_t i) {
     return array[i/(sizeof(size_t)*8)]
         & (1lu << (i % (sizeof(size_t)*8)));
@@ -27,20 +30,20 @@ static bool get_bit(size_t *array, size_t i) {
 
 static void set_bit(size_t *array, size_t i, bool val) {
     if (val) {
-        array[i/(sizeof(size_t)*8)] |= (1lu << (i % (sizeof(size_t)*8)));
+        array[i/BLOCK_BITS] |= (1lu << (i % BLOCK_BITS));
     } else {
-        array[i/(sizeof(size_t)*8)] &= ~(1lu << (i % (sizeof(size_t)*8)));
+        array[i/BLOCK_BITS] &= ~(1lu << (i % BLOCK_BITS));
     }
 }
 
 // gets the index of the first free 0 bit
 static size_t first_free(const size_t *array, size_t len) {
-    for (size_t i = 0; i < len/(sizeof(size_t) * 8); ++i) {
+    for (size_t i = 0; i < len/BLOCK_BITS; ++i) {
         size_t block = array[i];
         if (block != 0xfffffffffffffffflu) {
-            for (size_t j = 0; j < sizeof(size_t) * 8; ++j) {
+            for (size_t j = 0; j < BLOCK_BITS; ++j) {
                 if (!(block & (1lu << j))) {
-                    return i*sizeof(size_t)*8 + j;
+                    return i*BLOCK_BITS + j;
                 }
             }
         }
@@ -81,11 +84,16 @@ static struct obj_allocs *make_obj_allocs(struct obj_allocs *next) {
 plisp_t plisp_alloc_obj(uintptr_t tags) {
     void *ptr = allocate_or_null(conspool);
     if (ptr == NULL) {
-        //TODO garbage collect
+        plisp_init_gc(); // TODO: move this call
+        // It only needs to be called once at the start of the program
+        plisp_gc_collect();
+
+        printf("Full Page. Resizing\n");
         conspool = make_obj_allocs(conspool);
         ptr = allocate_or_null(conspool);
         assert(ptr != NULL);
     }
+    printf("Allocated: %X\n", ptr);
     return ((plisp_t) ptr) | tags;
 }
 
@@ -139,4 +147,53 @@ void plisp_init_gc() {
            "%*d %*d %*d %*d %*u %*u %*d "
            "%*u %*u %*u %lu", &stack_bottom);
     fclose(statfp);
+}
+
+static void gc_get_roots_from_stack(struct obj_allocs *pool) {
+    uintptr_t stack_top;
+    stack_top = __builtin_frame_address(0);
+    printf("Stack Top: %X\n", stack_top);
+    printf("Stack Bottom: %X\n", stack_bottom);
+    if (pool == NULL) {
+        return;
+    }
+
+    uintptr_t ptr;
+    uintptr_t objptr = pool->objs;
+    for (uintptr_t* p = stack_top; p <= stack_bottom; p += 8) {
+        ptr = *p;
+        if (ptr >= objptr &&
+            ptr < objptr + pool->num_objs * sizeof(struct plisp_cons)) {
+            set_bit(pool->grey_set,
+                    (ptr - objptr) / sizeof(struct plisp_cons), 1);
+        }
+    }
+
+    gc_get_roots_from_stack(pool->next);
+}
+
+static void gc_get_roots_from_registers(struct obj_allocs *pool) {
+    // TODO
+}
+
+static void gc_get_roots_from_perm(struct obj_allocs *pool) {
+    if (pool == NULL) {
+        return;
+    }
+
+    for (size_t i = 0; i < MAX_ALLOC_PAGE_SIZE/BLOCK_BITS; ++i) {
+        pool->grey_set[i] |= pool->permanent[i];
+    }
+
+    gc_get_roots_from_perm(pool->next);
+}
+static void gc_get_roots(struct obj_allocs *pool) {
+    gc_get_roots_from_stack(pool);
+    gc_get_roots_from_registers(pool);
+    gc_get_roots_from_perm(pool);
+}
+
+static void plisp_gc_collect() {
+    printf("Collecting Garbage\n");
+    gc_get_roots(conspool);
 }
