@@ -2,13 +2,16 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
+#include <math.h>
 #include <string.h>
 
 #define MAX_ALLOC_PAGE_SIZE 64
 #define BLOCK_BITS (sizeof(size_t)*8)
+#define TYPE_BIT_WIDTH (sizeof(size_t)*8)
 
 struct obj_allocs {
     size_t allocated[MAX_ALLOC_PAGE_SIZE/BLOCK_BITS];
+    size_t types[2*MAX_ALLOC_PAGE_SIZE/BLOCK_BITS];
     size_t grey_set[MAX_ALLOC_PAGE_SIZE/BLOCK_BITS];
     size_t black_set[MAX_ALLOC_PAGE_SIZE/BLOCK_BITS];
     size_t permanent[MAX_ALLOC_PAGE_SIZE/BLOCK_BITS];
@@ -24,8 +27,8 @@ static uintptr_t stack_bottom;
 static void plisp_gc_collect();
 
 static bool get_bit(size_t *array, size_t i) {
-    return array[i/(sizeof(size_t)*8)]
-        & (1lu << (i % (sizeof(size_t)*8)));
+    return array[i/BLOCK_BITS]
+        & (1lu << (i % BLOCK_BITS));
 }
 
 static void set_bit(size_t *array, size_t i, bool val) {
@@ -34,6 +37,19 @@ static void set_bit(size_t *array, size_t i, bool val) {
     } else {
         array[i/BLOCK_BITS] &= ~(1lu << (i % BLOCK_BITS));
     }
+}
+
+static void set_bit_wide(size_t *array, size_t idx, int val, int width) {
+    int mask = ((int)pow(2, width)) - 1;
+    int i = idx * width;
+    array[i/BLOCK_BITS] &= ~(mask << (i % BLOCK_BITS));
+    array[i/BLOCK_BITS] |= ((mask & val) << (i % BLOCK_BITS));
+}
+
+static void get_bit_wide(size_t *array, size_t idx, int width) {
+    int mask = ((int)pow(2, width)) - 1;
+    int i = idx * width;
+    return array[i/BLOCK_BITS] & (mask << (i % BLOCK_BITS));
 }
 
 // gets the index of the first free 0 bit
@@ -72,6 +88,7 @@ static struct obj_allocs *make_obj_allocs(struct obj_allocs *next) {
     memset(allocs->grey_set, 0, sizeof(allocs->grey_set));
     memset(allocs->black_set, 0, sizeof(allocs->black_set));
     memset(allocs->permanent, 0, sizeof(allocs->permanent));
+    memset(allocs->types, 0, sizeof(allocs->types));
 
     allocs->num_objs = MAX_ALLOC_PAGE_SIZE; // TODO: maybe set this dynamically
     allocs->objs = malloc(allocs->num_objs * sizeof(struct plisp_cons));
@@ -166,6 +183,8 @@ static void gc_get_roots_from_stack(struct obj_allocs *pool) {
             ptr < objptr + pool->num_objs * sizeof(struct plisp_cons)) {
             set_bit(pool->grey_set,
                     (ptr - objptr) / sizeof(struct plisp_cons), 1);
+            set_bit(pool->white_set,
+                    (ptr - objptr) / sizeof(struct plisp_cons), 0);
         }
     }
 
@@ -183,6 +202,7 @@ static void gc_get_roots_from_perm(struct obj_allocs *pool) {
 
     for (size_t i = 0; i < MAX_ALLOC_PAGE_SIZE/BLOCK_BITS; ++i) {
         pool->grey_set[i] |= pool->permanent[i];
+        pool->white_set[i] |= ~pool->permanent[i];
     }
 
     gc_get_roots_from_perm(pool->next);
@@ -193,7 +213,34 @@ static void gc_get_roots(struct obj_allocs *pool) {
     gc_get_roots_from_perm(pool);
 }
 
+// returns 1 if no values in grey set, otherwise 0
+static int plisp_gc_scan(struct obj_allocs *pool) {
+    if (pool == NULL) {
+        return;
+    }
+
+    plisp_cons* ptr;
+    for (size_t i = 0; i < MAX_ALLOC_PAGE_SIZE; ++i) {
+        if (get_bit(pool->grey_set, i)) {
+            ptr = pool->objs[i];
+            // TODO: add children to grey set
+            set_bit(pool->grey_set, i, 0);
+            set_bit(pool->black_set, i, 1);
+        }
+    }
+
+    plisp_gc_scan(pool->next);
+
+
+}
+
 static void plisp_gc_collect() {
     printf("Collecting Garbage\n");
     gc_get_roots(conspool);
+
+    // Stop the world collection
+    // Loop until no values in grey set
+    while (!plisp_gc_scan());
+
+    // TODO: Collect
 }
